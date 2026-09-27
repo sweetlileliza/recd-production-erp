@@ -71,9 +71,11 @@ export function initFirestore(): Firestore | null {
 
     // 3. Check standard local paths: server/serviceAccountKey.json or root serviceAccountKey.json
     const candidatePaths = [
-      path.resolve(__dirname, '..', 'serviceAccountKey.json'),
       path.resolve(process.cwd(), 'server', 'serviceAccountKey.json'),
       path.resolve(process.cwd(), 'serviceAccountKey.json'),
+      path.resolve(__dirname, 'serviceAccountKey.json'),
+      path.resolve(__dirname, '..', 'serviceAccountKey.json'),
+      path.resolve(__dirname, '..', 'server', 'serviceAccountKey.json'),
     ]
 
     for (const keyPath of candidatePaths) {

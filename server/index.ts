@@ -418,8 +418,14 @@ app.get('/api/discord/feed', async (req, res) => {
 })
 
 // In production, serve static assets built by Vite
-const distPath = path.join(__dirname, '..', 'dist')
-if (fs.existsSync(distPath)) {
+const possibleDistPaths = [
+  path.resolve(process.cwd(), 'dist'),
+  path.resolve(__dirname, '..', 'dist'),
+  path.resolve(__dirname, 'dist'),
+  __dirname,
+]
+const distPath = possibleDistPaths.find((p) => fs.existsSync(path.join(p, 'index.html')))
+if (distPath) {
   app.use(express.static(distPath))
   app.get(/^(?!\/api).*/, (_req, res) => {
     res.sendFile(path.join(distPath, 'index.html'))

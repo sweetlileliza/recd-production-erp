@@ -6,7 +6,14 @@ import { serverCache } from './cache.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
-const DATA_FILE = path.join(__dirname, '..', 'data', 'store.json')
+const possibleDataPaths = [
+  path.resolve(process.cwd(), 'server', 'data', 'store.json'),
+  path.resolve(process.cwd(), 'data', 'store.json'),
+  path.resolve(__dirname, '..', 'server', 'data', 'store.json'),
+  path.resolve(__dirname, '..', 'data', 'store.json'),
+  path.resolve(__dirname, 'data', 'store.json'),
+]
+const DATA_FILE = possibleDataPaths.find((p) => fs.existsSync(p)) || possibleDataPaths[0]
 
 // Local JSON fallback helpers
 function readLocalData() {
