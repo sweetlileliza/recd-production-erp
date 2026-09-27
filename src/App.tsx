@@ -70,10 +70,11 @@ export function App() {
         const projData = await projRes.json()
         setProjects(projData)
 
-        if (activeProject) {
-          const fresh = projData.find((p: Project) => p.id === activeProject.id)
-          if (fresh) setActiveProject(fresh)
-        }
+        setActiveProject((currentActive) => {
+          if (!currentActive) return null
+          const fresh = projData.find((p: Project) => p.id === currentActive.id)
+          return fresh || currentActive
+        })
       }
 
       if (teamRes.ok) {
@@ -235,6 +236,12 @@ export function App() {
   // Pre-production Setup Update
   const handleUpdateSetup = async (initialSetup: InitialSetup) => {
     if (!activeProject) return
+
+    setActiveProject((prev) => (prev ? { ...prev, initialSetup } : null))
+    setProjects((prevProjects) =>
+      prevProjects.map((p) => (p.id === activeProject.id ? { ...p, initialSetup } : p))
+    )
+
     try {
       const res = await fetch(`/api/projects/${activeProject.id}/initial-setup`, {
         method: 'PUT',
@@ -242,7 +249,10 @@ export function App() {
         body: JSON.stringify({ initialSetup }),
       })
       if (res.ok) {
-        await loadData()
+        const result = await res.json()
+        if (result) {
+          setActiveProject((prev) => (prev ? { ...prev, initialSetup: result } : null))
+        }
       }
     } catch (err) {
       console.error('Error updating initial setup:', err)
@@ -252,6 +262,11 @@ export function App() {
   // Save Shots from Script Maker
   const handleSaveShots = async (shots: Shot[]) => {
     if (!activeProject) return
+    setActiveProject((prev) => (prev ? { ...prev, shots } : null))
+    setProjects((prevProjects) =>
+      prevProjects.map((p) => (p.id === activeProject.id ? { ...p, shots } : p))
+    )
+
     try {
       const res = await fetch(`/api/projects/${activeProject.id}/shots`, {
         method: 'PUT',
@@ -269,6 +284,23 @@ export function App() {
   // Update Single Shot
   const handleUpdateShot = async (shotId: string, updates: Partial<Shot>) => {
     if (!activeProject) return
+
+    // 1. Optimistically update activeProject immediately
+    setActiveProject((prev) => {
+      if (!prev) return null
+      const updatedShots = prev.shots?.map((s) => (s.id === shotId ? { ...s, ...updates } : s))
+      return { ...prev, shots: updatedShots }
+    })
+
+    // 2. Optimistically update projects list immediately
+    setProjects((prevProjects) =>
+      prevProjects.map((p) => {
+        if (p.id !== activeProject.id) return p
+        const updatedShots = p.shots?.map((s) => (s.id === shotId ? { ...s, ...updates } : s))
+        return { ...p, shots: updatedShots }
+      })
+    )
+
     try {
       const res = await fetch(`/api/projects/${activeProject.id}/shots/${shotId}`, {
         method: 'PUT',
@@ -276,7 +308,19 @@ export function App() {
         body: JSON.stringify(updates),
       })
       if (res.ok) {
-        await loadData()
+        const updatedShot = await res.json()
+        setActiveProject((prev) => {
+          if (!prev) return null
+          const updatedShots = prev.shots?.map((s) => (s.id === shotId ? { ...s, ...updatedShot } : s))
+          return { ...prev, shots: updatedShots }
+        })
+        setProjects((prevProjects) =>
+          prevProjects.map((p) => {
+            if (p.id !== activeProject.id) return p
+            const updatedShots = p.shots?.map((s) => (s.id === shotId ? { ...s, ...updatedShot } : s))
+            return { ...p, shots: updatedShots }
+          })
+        )
       }
     } catch (err) {
       console.error('Error updating shot:', err)
@@ -286,6 +330,8 @@ export function App() {
   // Update Single Panel
   const handleUpdatePanel = async (shotId: string, panelId: string, updates: Partial<Panel>) => {
     if (!activeProject) return
+
+    // 1. Optimistically update activeProject immediately
     setActiveProject((prev) => {
       if (!prev) return null
       const updatedShots = prev.shots?.map((s) => {
@@ -296,13 +342,50 @@ export function App() {
       return { ...prev, shots: updatedShots }
     })
 
+    // 2. Optimistically update projects list immediately
+    setProjects((prevProjects) =>
+      prevProjects.map((p) => {
+        if (p.id !== activeProject.id) return p
+        const updatedShots = p.shots?.map((s) => {
+          if (s.id !== shotId) return s
+          const updatedPanels = s.panels?.map((panel) => (panel.id === panelId ? { ...panel, ...updates } : panel))
+          return { ...s, panels: updatedPanels }
+        })
+        return { ...p, shots: updatedShots }
+      })
+    )
+
     try {
-      await fetch(`/api/projects/${activeProject.id}/shots/${shotId}/panels/${panelId}`, {
+      const res = await fetch(`/api/projects/${activeProject.id}/shots/${shotId}/panels/${panelId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updates),
       })
-      await loadData()
+      if (res.ok) {
+        const data = await res.json()
+        if (data.panel) {
+          setActiveProject((prev) => {
+            if (!prev) return null
+            const updatedShots = prev.shots?.map((s) => {
+              if (s.id !== shotId) return s
+              const updatedPanels = s.panels?.map((p) => (p.id === panelId ? { ...p, ...data.panel } : p))
+              return { ...s, panels: updatedPanels }
+            })
+            return { ...prev, shots: updatedShots }
+          })
+          setProjects((prevProjects) =>
+            prevProjects.map((p) => {
+              if (p.id !== activeProject.id) return p
+              const updatedShots = p.shots?.map((s) => {
+                if (s.id !== shotId) return s
+                const updatedPanels = s.panels?.map((panel) => (panel.id === panelId ? { ...panel, ...data.panel } : panel))
+                return { ...s, panels: updatedPanels }
+              })
+              return { ...p, shots: updatedShots }
+            })
+          )
+        }
+      }
     } catch (err) {
       console.error('Error updating panel:', err)
     }
@@ -311,13 +394,38 @@ export function App() {
   // Artist Opt In
   const handleArtistOptIn = async (shotId: string, artistName: string) => {
     if (!activeProject) return
+
+    setActiveProject((prev) => {
+      if (!prev) return null
+      const updatedShots = prev.shots?.map((s) => {
+        if (s.id !== shotId) return s
+        const currentOptIns = s.artistOptIns || []
+        const nextOptIns = currentOptIns.includes(artistName)
+          ? currentOptIns.filter((n) => n !== artistName)
+          : [...currentOptIns, artistName]
+        return { ...s, artistOptIns: nextOptIns }
+      })
+      return { ...prev, shots: updatedShots }
+    })
+
     try {
-      await fetch(`/api/projects/${activeProject.id}/shots/${shotId}/opt-in`, {
+      const res = await fetch(`/api/projects/${activeProject.id}/shots/${shotId}/opt-in`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ artistName }),
       })
-      await loadData()
+      if (res.ok) {
+        const data = await res.json()
+        if (data.artistOptIns) {
+          setActiveProject((prev) => {
+            if (!prev) return null
+            const updatedShots = prev.shots?.map((s) =>
+              s.id === shotId ? { ...s, artistOptIns: data.artistOptIns } : s
+            )
+            return { ...prev, shots: updatedShots }
+          })
+        }
+      }
     } catch (err) {
       console.error('Error opting in:', err)
     }
@@ -326,6 +434,39 @@ export function App() {
   // Bulk Assign shots to an artist
   const handleBulkAssign = async (shotIds: string[], artistName: string, deadline?: string) => {
     if (!activeProject) return
+
+    setActiveProject((prev) => {
+      if (!prev) return null
+      const updatedShots = prev.shots?.map((s) => {
+        if (!shotIds.includes(s.id)) return s
+        const updatedPanels = s.panels?.map((p) => ({ ...p, artist: artistName }))
+        return {
+          ...s,
+          assignedArtist: artistName,
+          ...(deadline ? { deadline } : {}),
+          panels: updatedPanels,
+        }
+      })
+      return { ...prev, shots: updatedShots }
+    })
+
+    setProjects((prevProjects) =>
+      prevProjects.map((p) => {
+        if (p.id !== activeProject.id) return p
+        const updatedShots = p.shots?.map((s) => {
+          if (!shotIds.includes(s.id)) return s
+          const updatedPanels = s.panels?.map((panel) => ({ ...panel, artist: artistName }))
+          return {
+            ...s,
+            assignedArtist: artistName,
+            ...(deadline ? { deadline } : {}),
+            panels: updatedPanels,
+          }
+        })
+        return { ...p, shots: updatedShots }
+      })
+    )
+
     try {
       const res = await fetch(`/api/projects/${activeProject.id}/shots/bulk-assign`, {
         method: 'PUT',
@@ -333,7 +474,11 @@ export function App() {
         body: JSON.stringify({ shotIds, artistName, deadline }),
       })
       if (res.ok) {
-        await loadData()
+        // Background refresh without blocking active UI
+        fetch('/api/projects')
+          .then((r) => r.json())
+          .then((projs) => setProjects(projs))
+          .catch(() => {})
       }
     } catch (err) {
       console.error('Error bulk assigning:', err)
@@ -360,6 +505,12 @@ export function App() {
   // Update Project metadata (e.g., refDocUrl)
   const handleUpdateProject = async (updates: Partial<Project>) => {
     if (!activeProject) return
+
+    setActiveProject((prev) => (prev ? { ...prev, ...updates } : null))
+    setProjects((prevProjects) =>
+      prevProjects.map((p) => (p.id === activeProject.id ? { ...p, ...updates } : p))
+    )
+
     try {
       const res = await fetch(`/api/projects/${activeProject.id}`, {
         method: 'PUT',
@@ -367,7 +518,11 @@ export function App() {
         body: JSON.stringify(updates),
       })
       if (res.ok) {
-        await loadData()
+        const updated = await res.json()
+        setActiveProject((prev) => (prev ? { ...prev, ...updated } : null))
+        setProjects((prevProjects) =>
+          prevProjects.map((p) => (p.id === activeProject.id ? { ...p, ...updated } : p))
+        )
       }
     } catch (err) {
       console.error('Error updating project:', err)

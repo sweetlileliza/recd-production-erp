@@ -36,6 +36,45 @@ function writeLocalData(data: any) {
   }
 }
 
+// In-memory serialized lock per project to prevent Firestore contention & transaction aborts
+const projectLocks = new Map<string, Promise<any>>()
+
+export async function withProjectLock<T>(projectId: string, fn: () => Promise<T>): Promise<T> {
+  const prev = projectLocks.get(projectId) || Promise.resolve()
+  let resolveLock: () => void
+  const next = new Promise<void>((res) => {
+    resolveLock = res
+  })
+  projectLocks.set(projectId, next)
+
+  try {
+    await prev
+    return await fn()
+  } finally {
+    resolveLock!()
+    if (projectLocks.get(projectId) === next) {
+      projectLocks.delete(projectId)
+    }
+  }
+}
+
+// Keep in-memory cache fresh and warm without dropping all cached projects
+export function updateProjectInCache(updatedProj: any): void {
+  if (!updatedProj?.id) return
+  serverCache.set(`project:${updatedProj.id}`, updatedProj, 30000)
+
+  const allProjects = serverCache.get<any[]>('projects:all')
+  if (Array.isArray(allProjects)) {
+    const idx = allProjects.findIndex((p) => p.id === updatedProj.id)
+    if (idx !== -1) {
+      allProjects[idx] = updatedProj
+    } else {
+      allProjects.unshift(updatedProj)
+    }
+    serverCache.set('projects:all', allProjects, 30000)
+  }
+}
+
 /**
  * Checks if Firestore needs to be auto-seeded from store.json
  */
@@ -222,12 +261,12 @@ export async function createProject(payload: any): Promise<any> {
     if (!local.projects) local.projects = []
     local.projects.unshift(newProject)
     writeLocalData(local)
+    updateProjectInCache(newProject)
     return newProject
   }
 
   await db.collection('projects').doc(newProject.id).set(newProject)
-  serverCache.delete('projects:all')
-  serverCache.set(`project:${newProject.id}`, newProject)
+  updateProjectInCache(newProject)
   return newProject
 }
 
@@ -241,24 +280,23 @@ export async function updateProject(id: string, updates: any): Promise<any | nul
     if (index === -1) return null
     local.projects[index] = { ...local.projects[index], ...updates, updatedAt: now }
     writeLocalData(local)
+    updateProjectInCache(local.projects[index])
     return local.projects[index]
   }
 
-  const docRef = db.collection('projects').doc(id)
-  let updatedData: any = null
-
-  // Using transaction for atomic update
-  await db.runTransaction(async (transaction) => {
-    const snapshot = await transaction.get(docRef)
-    if (!snapshot.exists) throw new Error('Project not found')
-    const current = snapshot.data() || {}
-    updatedData = { ...current, ...updates, updatedAt: now }
-    transaction.set(docRef, updatedData)
+  return withProjectLock(id, async () => {
+    const docRef = db.collection('projects').doc(id)
+    let current = serverCache.get<any>(`project:${id}`)
+    if (!current) {
+      const snapshot = await docRef.get()
+      if (!snapshot.exists) throw new Error('Project not found')
+      current = snapshot.data() || {}
+    }
+    const updatedData = { ...current, ...updates, updatedAt: now }
+    await docRef.set(updatedData)
+    updateProjectInCache(updatedData)
+    return updatedData
   })
-
-  serverCache.delete('projects:all')
-  serverCache.delete(`project:${id}`)
-  return updatedData
 }
 
 export async function deleteProject(id: string): Promise<boolean> {
@@ -269,12 +307,20 @@ export async function deleteProject(id: string): Promise<boolean> {
     local.projects = local.projects?.filter((p: any) => p.id !== id) || []
     if (local.projects.length === originalLen) return false
     writeLocalData(local)
+    serverCache.delete(`project:${id}`)
+    const allProjects = serverCache.get<any[]>('projects:all')
+    if (Array.isArray(allProjects)) {
+      serverCache.set('projects:all', allProjects.filter((p) => p.id !== id), 30000)
+    }
     return true
   }
 
   await db.collection('projects').doc(id).delete()
-  serverCache.delete('projects:all')
   serverCache.delete(`project:${id}`)
+  const allProjects = serverCache.get<any[]>('projects:all')
+  if (Array.isArray(allProjects)) {
+    serverCache.set('projects:all', allProjects.filter((p) => p.id !== id), 30000)
+  }
   return true
 }
 
@@ -294,16 +340,18 @@ export async function updateInitialSetup(id: string, stageKey?: string, stageDat
     }
     proj.updatedAt = now
     writeLocalData(local)
+    updateProjectInCache(proj)
     return proj.initialSetup
   }
 
-  const docRef = db.collection('projects').doc(id)
-  let resultingSetup: any = null
-
-  await db.runTransaction(async (transaction) => {
-    const snapshot = await transaction.get(docRef)
-    if (!snapshot.exists) throw new Error('Project not found')
-    const proj = snapshot.data() as any
+  return withProjectLock(id, async () => {
+    const docRef = db.collection('projects').doc(id)
+    let proj = serverCache.get<any>(`project:${id}`)
+    if (!proj) {
+      const snapshot = await docRef.get()
+      if (!snapshot.exists) throw new Error('Project not found')
+      proj = snapshot.data() as any
+    }
 
     if (!proj.initialSetup) proj.initialSetup = {}
 
@@ -313,17 +361,15 @@ export async function updateInitialSetup(id: string, stageKey?: string, stageDat
       proj.initialSetup = fullSetup
     }
     proj.updatedAt = now
-    resultingSetup = proj.initialSetup
 
-    transaction.update(docRef, {
+    await docRef.update({
       initialSetup: proj.initialSetup,
       updatedAt: now,
     })
-  })
 
-  serverCache.delete('projects:all')
-  serverCache.delete(`project:${id}`)
-  return resultingSetup
+    updateProjectInCache(proj)
+    return proj.initialSetup
+  })
 }
 
 export async function updateShots(id: string, shots: any[]): Promise<{ count: number; updatedAt: string } | null> {
@@ -337,25 +383,30 @@ export async function updateShots(id: string, shots: any[]): Promise<{ count: nu
     proj.shots = shots || []
     proj.updatedAt = now
     writeLocalData(local)
+    updateProjectInCache(proj)
     return { count: proj.shots.length, updatedAt: now }
   }
 
-  const docRef = db.collection('projects').doc(id)
-  let count = 0
+  return withProjectLock(id, async () => {
+    const docRef = db.collection('projects').doc(id)
+    let proj = serverCache.get<any>(`project:${id}`)
+    if (!proj) {
+      const snapshot = await docRef.get()
+      if (!snapshot.exists) throw new Error('Project not found')
+      proj = snapshot.data() as any
+    }
 
-  await db.runTransaction(async (transaction) => {
-    const snapshot = await transaction.get(docRef)
-    if (!snapshot.exists) throw new Error('Project not found')
-    count = shots.length
-    transaction.update(docRef, {
-      shots,
+    proj.shots = shots || []
+    proj.updatedAt = now
+
+    await docRef.update({
+      shots: proj.shots,
       updatedAt: now,
     })
-  })
 
-  serverCache.delete('projects:all')
-  serverCache.delete(`project:${id}`)
-  return { count, updatedAt: now }
+    updateProjectInCache(proj)
+    return { count: proj.shots.length, updatedAt: now }
+  })
 }
 
 export async function bulkAssignShots(id: string, shotIds: string[], artistName: string, deadline?: string): Promise<{ count: number; updatedAt: string } | null> {
@@ -382,17 +433,21 @@ export async function bulkAssignShots(id: string, shotIds: string[], artistName:
     })
     proj.updatedAt = now
     writeLocalData(local)
+    updateProjectInCache(proj)
     return { count: assignedCount, updatedAt: now }
   }
 
-  const docRef = db.collection('projects').doc(id)
-  let assignedCount = 0
+  return withProjectLock(id, async () => {
+    const docRef = db.collection('projects').doc(id)
+    let proj = serverCache.get<any>(`project:${id}`)
+    if (!proj) {
+      const snapshot = await docRef.get()
+      if (!snapshot.exists) throw new Error('Project not found')
+      proj = snapshot.data() as any
+    }
 
-  await db.runTransaction(async (transaction) => {
-    const snapshot = await transaction.get(docRef)
-    if (!snapshot.exists) throw new Error('Project not found')
-    const proj = snapshot.data() as any
     const shots = proj.shots || []
+    let assignedCount = 0
 
     shots.forEach((shot: any) => {
       if (shotIds.includes(shot.id)) {
@@ -407,15 +462,16 @@ export async function bulkAssignShots(id: string, shotIds: string[], artistName:
       }
     })
 
-    transaction.update(docRef, {
+    proj.updatedAt = now
+
+    await docRef.update({
       shots,
       updatedAt: now,
     })
-  })
 
-  serverCache.delete('projects:all')
-  serverCache.delete(`project:${id}`)
-  return { count: assignedCount, updatedAt: now }
+    updateProjectInCache(proj)
+    return { count: assignedCount, updatedAt: now }
+  })
 }
 
 export async function bulkFolders(id: string, folderMappings?: Record<string, string>, baseFolderUrl?: string): Promise<{ count: number; updatedAt: string } | null> {
@@ -440,19 +496,20 @@ export async function bulkFolders(id: string, folderMappings?: Record<string, st
     })
     proj.updatedAt = now
     writeLocalData(local)
+    updateProjectInCache(proj)
     return { count: proj.shots?.length || 0, updatedAt: now }
   }
 
-  const docRef = db.collection('projects').doc(id)
-  let totalShots = 0
+  return withProjectLock(id, async () => {
+    const docRef = db.collection('projects').doc(id)
+    let proj = serverCache.get<any>(`project:${id}`)
+    if (!proj) {
+      const snapshot = await docRef.get()
+      if (!snapshot.exists) throw new Error('Project not found')
+      proj = snapshot.data() as any
+    }
 
-  await db.runTransaction(async (transaction) => {
-    const snapshot = await transaction.get(docRef)
-    if (!snapshot.exists) throw new Error('Project not found')
-    const proj = snapshot.data() as any
     const shots = proj.shots || []
-    totalShots = shots.length
-
     shots.forEach((shot: any) => {
       if (folderMappings && folderMappings[shot.id]) {
         shot.driveFolderUrl = folderMappings[shot.id]
@@ -465,15 +522,16 @@ export async function bulkFolders(id: string, folderMappings?: Record<string, st
       }
     })
 
-    transaction.update(docRef, {
+    proj.updatedAt = now
+
+    await docRef.update({
       shots,
       updatedAt: now,
     })
-  })
 
-  serverCache.delete('projects:all')
-  serverCache.delete(`project:${id}`)
-  return { count: totalShots, updatedAt: now }
+    updateProjectInCache(proj)
+    return { count: shots.length, updatedAt: now }
+  })
 }
 
 export async function updateSingleShot(id: string, shotId: string, updates: any): Promise<any | null> {
@@ -490,32 +548,34 @@ export async function updateSingleShot(id: string, shotId: string, updates: any)
     Object.assign(shot, updates, { updatedAt: now })
     proj.updatedAt = now
     writeLocalData(local)
+    updateProjectInCache(proj)
     return shot
   }
 
-  const docRef = db.collection('projects').doc(id)
-  let updatedShot: any = null
+  return withProjectLock(id, async () => {
+    const docRef = db.collection('projects').doc(id)
+    let proj = serverCache.get<any>(`project:${id}`)
+    if (!proj) {
+      const snapshot = await docRef.get()
+      if (!snapshot.exists) throw new Error('Project not found')
+      proj = snapshot.data() as any
+    }
 
-  await db.runTransaction(async (transaction) => {
-    const snapshot = await transaction.get(docRef)
-    if (!snapshot.exists) throw new Error('Project not found')
-    const proj = snapshot.data() as any
     const shots = proj.shots || []
     const shot = shots.find((s: any) => s.id === shotId)
     if (!shot) throw new Error('Shot not found')
 
     Object.assign(shot, updates, { updatedAt: now })
-    updatedShot = shot
+    proj.updatedAt = now
 
-    transaction.update(docRef, {
+    await docRef.update({
       shots,
       updatedAt: now,
     })
-  })
 
-  serverCache.delete('projects:all')
-  serverCache.delete(`project:${id}`)
-  return updatedShot
+    updateProjectInCache(proj)
+    return shot
+  })
 }
 
 export async function toggleOptIn(id: string, shotId: string, artistName: string): Promise<string[] | null> {
@@ -538,16 +598,19 @@ export async function toggleOptIn(id: string, shotId: string, artistName: string
     shot.updatedAt = now
     proj.updatedAt = now
     writeLocalData(local)
+    updateProjectInCache(proj)
     return shot.artistOptIns
   }
 
-  const docRef = db.collection('projects').doc(id)
-  let optIns: string[] = []
+  return withProjectLock(id, async () => {
+    const docRef = db.collection('projects').doc(id)
+    let proj = serverCache.get<any>(`project:${id}`)
+    if (!proj) {
+      const snapshot = await docRef.get()
+      if (!snapshot.exists) throw new Error('Project not found')
+      proj = snapshot.data() as any
+    }
 
-  await db.runTransaction(async (transaction) => {
-    const snapshot = await transaction.get(docRef)
-    if (!snapshot.exists) throw new Error('Project not found')
-    const proj = snapshot.data() as any
     const shots = proj.shots || []
     const shot = shots.find((s: any) => s.id === shotId)
     if (!shot) throw new Error('Shot not found')
@@ -559,17 +622,16 @@ export async function toggleOptIn(id: string, shotId: string, artistName: string
       shot.artistOptIns.push(artistName)
     }
     shot.updatedAt = now
-    optIns = shot.artistOptIns
+    proj.updatedAt = now
 
-    transaction.update(docRef, {
+    await docRef.update({
       shots,
       updatedAt: now,
     })
-  })
 
-  serverCache.delete('projects:all')
-  serverCache.delete(`project:${id}`)
-  return optIns
+    updateProjectInCache(proj)
+    return shot.artistOptIns
+  })
 }
 
 export async function updateArtistPreference(id: string, prefData: any): Promise<{ preference: any; artistPreferences: any[] } | null> {
@@ -619,16 +681,18 @@ export async function updateArtistPreference(id: string, prefData: any): Promise
 
     proj.updatedAt = now
     writeLocalData(local)
+    updateProjectInCache(proj)
     return { preference: newPref, artistPreferences: proj.artistPreferences }
   }
 
-  const docRef = db.collection('projects').doc(id)
-  let allPreferences: any[] = []
-
-  await db.runTransaction(async (transaction) => {
-    const snapshot = await transaction.get(docRef)
-    if (!snapshot.exists) throw new Error('Project not found')
-    const proj = snapshot.data() as any
+  return withProjectLock(id, async () => {
+    const docRef = db.collection('projects').doc(id)
+    let proj = serverCache.get<any>(`project:${id}`)
+    if (!proj) {
+      const snapshot = await docRef.get()
+      if (!snapshot.exists) throw new Error('Project not found')
+      proj = snapshot.data() as any
+    }
 
     if (!proj.artistPreferences) proj.artistPreferences = []
     const existingIdx = proj.artistPreferences.findIndex(
@@ -652,18 +716,17 @@ export async function updateArtistPreference(id: string, prefData: any): Promise
       }
     })
 
-    allPreferences = proj.artistPreferences
+    proj.updatedAt = now
 
-    transaction.update(docRef, {
-      artistPreferences: allPreferences,
+    await docRef.update({
+      artistPreferences: proj.artistPreferences,
       shots,
       updatedAt: now,
     })
-  })
 
-  serverCache.delete('projects:all')
-  serverCache.delete(`project:${id}`)
-  return { preference: newPref, artistPreferences: allPreferences }
+    updateProjectInCache(proj)
+    return { preference: newPref, artistPreferences: proj.artistPreferences }
+  })
 }
 
 export async function updatePanel(id: string, shotId: string, panelId: string, updates: any): Promise<{ panel: any; updatedAt: string } | null> {
@@ -683,16 +746,19 @@ export async function updatePanel(id: string, shotId: string, panelId: string, u
     shot.updatedAt = now
     proj.updatedAt = now
     writeLocalData(local)
+    updateProjectInCache(proj)
     return { panel, updatedAt: now }
   }
 
-  const docRef = db.collection('projects').doc(id)
-  let updatedPanel: any = null
+  return withProjectLock(id, async () => {
+    const docRef = db.collection('projects').doc(id)
+    let proj = serverCache.get<any>(`project:${id}`)
+    if (!proj) {
+      const snapshot = await docRef.get()
+      if (!snapshot.exists) throw new Error('Project not found')
+      proj = snapshot.data() as any
+    }
 
-  await db.runTransaction(async (transaction) => {
-    const snapshot = await transaction.get(docRef)
-    if (!snapshot.exists) throw new Error('Project not found')
-    const proj = snapshot.data() as any
     const shots = proj.shots || []
     const shot = shots.find((s: any) => s.id === shotId)
     if (!shot) throw new Error('Shot not found')
@@ -702,17 +768,15 @@ export async function updatePanel(id: string, shotId: string, panelId: string, u
     Object.assign(panel, updates, { updatedAt: now })
     shot.updatedAt = now
     proj.updatedAt = now
-    updatedPanel = panel
 
-    transaction.update(docRef, {
+    await docRef.update({
       shots,
       updatedAt: now,
     })
-  })
 
-  serverCache.delete('projects:all')
-  serverCache.delete(`project:${id}`)
-  return { panel: updatedPanel, updatedAt: now }
+    updateProjectInCache(proj)
+    return { panel, updatedAt: now }
+  })
 }
 
 export async function updateVoiceCasting(id: string, voiceCasting: any[]): Promise<any[] | null> {
@@ -726,22 +790,30 @@ export async function updateVoiceCasting(id: string, voiceCasting: any[]): Promi
     proj.voiceCasting = voiceCasting || []
     proj.updatedAt = now
     writeLocalData(local)
+    updateProjectInCache(proj)
     return proj.voiceCasting
   }
 
-  const docRef = db.collection('projects').doc(id)
-  await db.runTransaction(async (transaction) => {
-    const snapshot = await transaction.get(docRef)
-    if (!snapshot.exists) throw new Error('Project not found')
-    transaction.update(docRef, {
-      voiceCasting,
+  return withProjectLock(id, async () => {
+    const docRef = db.collection('projects').doc(id)
+    let proj = serverCache.get<any>(`project:${id}`)
+    if (!proj) {
+      const snapshot = await docRef.get()
+      if (!snapshot.exists) throw new Error('Project not found')
+      proj = snapshot.data() as any
+    }
+
+    proj.voiceCasting = voiceCasting || []
+    proj.updatedAt = now
+
+    await docRef.update({
+      voiceCasting: proj.voiceCasting,
       updatedAt: now,
     })
-  })
 
-  serverCache.delete('projects:all')
-  serverCache.delete(`project:${id}`)
-  return voiceCasting
+    updateProjectInCache(proj)
+    return proj.voiceCasting
+  })
 }
 
 export async function updatePostProduction(id: string, updates: any): Promise<any | null> {
@@ -763,16 +835,18 @@ export async function updatePostProduction(id: string, updates: any): Promise<an
     }
     proj.updatedAt = now
     writeLocalData(local)
+    updateProjectInCache(proj)
     return proj.postProduction
   }
 
-  const docRef = db.collection('projects').doc(id)
-  let updatedPost: any = null
-
-  await db.runTransaction(async (transaction) => {
-    const snapshot = await transaction.get(docRef)
-    if (!snapshot.exists) throw new Error('Project not found')
-    const proj = snapshot.data() as any
+  return withProjectLock(id, async () => {
+    const docRef = db.collection('projects').doc(id)
+    let proj = serverCache.get<any>(`project:${id}`)
+    if (!proj) {
+      const snapshot = await docRef.get()
+      if (!snapshot.exists) throw new Error('Project not found')
+      proj = snapshot.data() as any
+    }
 
     proj.postProduction = {
       ...proj.postProduction,
@@ -785,17 +859,16 @@ export async function updatePostProduction(id: string, updates: any): Promise<an
     }
 
     if (updates.isReleased) {
+      proj.status = 'released'
       docUpdates.status = 'released'
       docUpdates['postProduction.releasedAt'] = now
     }
+    proj.updatedAt = now
 
-    updatedPost = proj.postProduction
-    transaction.update(docRef, docUpdates)
+    await docRef.update(docUpdates)
+    updateProjectInCache(proj)
+    return proj.postProduction
   })
-
-  serverCache.delete('projects:all')
-  serverCache.delete(`project:${id}`)
-  return updatedPost
 }
 
 // ----------------- TEAM MEMBERS & ARTISTS -----------------

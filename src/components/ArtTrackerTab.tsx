@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import {
   ExternalLink,
   Filter,
@@ -39,6 +39,175 @@ interface ArtTrackerTabProps {
   isArtist?: boolean
   activeArtistName: string
   canAssign: boolean
+}
+
+const AnimationStatusInput = ({
+  initialValue,
+  onSave,
+}: {
+  initialValue: string
+  onSave: (val: string) => void | Promise<void>
+}) => {
+  const [val, setVal] = useState(initialValue || '')
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle')
+  const isFocusedRef = useRef(false)
+  const debounceTimerRef = useRef<any>(null)
+  const isMountedRef = useRef(true)
+
+  useEffect(() => {
+    isMountedRef.current = true
+    return () => {
+      isMountedRef.current = false
+      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current)
+    }
+  }, [])
+
+  // Sync external changes only when not actively typing/focused
+  useEffect(() => {
+    if (!isFocusedRef.current && saveStatus === 'idle') {
+      setVal(initialValue || '')
+    }
+  }, [initialValue, saveStatus])
+
+  const triggerSave = (newVal: string) => {
+    if (newVal === (initialValue || '')) {
+      setSaveStatus('idle')
+      return
+    }
+    setSaveStatus('saving')
+    Promise.resolve(onSave(newVal))
+      .then(() => {
+        if (isMountedRef.current) {
+          setSaveStatus('saved')
+          setTimeout(() => {
+            if (isMountedRef.current) setSaveStatus('idle')
+          }, 1500)
+        }
+      })
+      .catch(() => {
+        if (isMountedRef.current) setSaveStatus('idle')
+      })
+  }
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const nextVal = e.target.value
+    setVal(nextVal)
+    setSaveStatus('saving')
+
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current)
+    }
+
+    debounceTimerRef.current = setTimeout(() => {
+      triggerSave(nextVal)
+    }, 500)
+  }
+
+  const handleBlur = () => {
+    isFocusedRef.current = false
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current)
+    }
+    if (val !== (initialValue || '')) {
+      triggerSave(val)
+    } else {
+      setSaveStatus('idle')
+    }
+  }
+
+  const handleFocus = (e: React.FocusEvent<HTMLInputElement>) => {
+    isFocusedRef.current = true
+    e.target.select()
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current)
+      }
+      e.currentTarget.blur()
+    }
+  }
+
+  const isUrl = /^https?:\/\//i.test(val.trim())
+  const isCompleted = val.trim().toLowerCase() === 'completed' || val.trim().toLowerCase() === 'done'
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '4px', width: '100%', position: 'relative' }}>
+      <input
+        type="text"
+        value={val}
+        placeholder="Animation WIP / update..."
+        onChange={handleChange}
+        onFocus={handleFocus}
+        onBlur={handleBlur}
+        onKeyDown={handleKeyDown}
+        style={{
+          width: '100%',
+          fontSize: '11px',
+          padding: '4px 8px',
+          paddingRight: saveStatus !== 'idle' ? (isUrl ? '75px' : '52px') : (isUrl ? '30px' : '8px'),
+          background: isCompleted ? 'rgba(16, 185, 129, 0.08)' : 'var(--bg-main)',
+          border: isCompleted ? '1px solid rgba(35, 165, 90, 0.4)' : '1px solid var(--border-medium)',
+          borderRadius: 'var(--radius-xs)',
+          color: isCompleted ? 'var(--color-green)' : 'var(--text-main)',
+          fontWeight: isCompleted ? 700 : 400,
+          outline: 'none',
+        }}
+      />
+      {saveStatus === 'saving' && (
+        <span
+          style={{
+            position: 'absolute',
+            right: isUrl ? '28px' : '6px',
+            fontSize: '9px',
+            color: 'var(--text-dim)',
+            pointerEvents: 'none',
+          }}
+        >
+          Saving...
+        </span>
+      )}
+      {saveStatus === 'saved' && (
+        <span
+          style={{
+            position: 'absolute',
+            right: isUrl ? '28px' : '6px',
+            fontSize: '9px',
+            color: 'var(--color-green)',
+            fontWeight: 600,
+            pointerEvents: 'none',
+          }}
+        >
+          Saved ✓
+        </span>
+      )}
+      {isUrl && (
+        <a
+          href={val.trim()}
+          target="_blank"
+          rel="noreferrer"
+          title="Open link in new tab"
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '3px 6px',
+            borderRadius: 'var(--radius-xs)',
+            background: 'rgba(139, 92, 246, 0.15)',
+            border: '1px solid var(--color-purple)',
+            color: 'var(--color-purple)',
+            flexShrink: 0,
+            textDecoration: 'none',
+            fontSize: '10px',
+            gap: '3px',
+          }}
+        >
+          <ExternalLink size={11} />
+        </a>
+      )}
+    </div>
+  )
 }
 
 export const ArtTrackerTab = ({
@@ -379,6 +548,11 @@ export const ArtTrackerTab = ({
     shot.panels?.forEach((panel) => {
       totalPanels += 1
       totalBudget += Number(panel.price) || 0
+      const isComp =
+        panel.status === 'Completed' ||
+        (panel.status || '').toLowerCase() === 'completed' ||
+        (panel.status || '').toLowerCase() === 'done'
+
       if (panel.status === 'Sketched') sketchedCount += 1
       if (panel.status === 'Lined') {
         sketchedCount += 1
@@ -389,7 +563,7 @@ export const ArtTrackerTab = ({
         linedCount += 1
         coloredCount += 1
       }
-      if (panel.status === 'Completed') {
+      if (isComp) {
         sketchedCount += 1
         linedCount += 1
         coloredCount += 1
@@ -406,7 +580,11 @@ export const ArtTrackerTab = ({
     if (artistFilter !== 'ALL' && artistFilter !== 'UNASSIGNED' && shot.assignedArtist !== artistFilter) return false
 
     if (statusFilter !== 'ALL') {
-      const hasStatus = shot.panels?.some((p) => p.status === statusFilter)
+      const hasStatus = shot.panels?.some(
+        (p) =>
+          p.status === statusFilter ||
+          (statusFilter === 'Completed' && (p.status || '').toLowerCase() === 'done')
+      )
       if (!hasStatus) return false
     }
 
@@ -417,7 +595,8 @@ export const ArtTrackerTab = ({
         (p) =>
           p.panelCode.toLowerCase().includes(q) ||
           (p.scriptSegment || '').toLowerCase().includes(q) ||
-          (p.directionNotes || '').toLowerCase().includes(q)
+          (p.directionNotes || '').toLowerCase().includes(q) ||
+          (p.status || '').toLowerCase().includes(q)
       )
       if (!matchShot && !matchPanels) return false
     }
@@ -2370,7 +2549,14 @@ export const ArtTrackerTab = ({
 
           const shotLastUpdated = new Date(shot.updatedAt || project.createdAt).getTime()
           const diffDays = Math.floor((Date.now() - shotLastUpdated) / (1000 * 3600 * 24))
-          const allPanelsCompleted = !shot.isAnimated && (shot.panels?.length > 0) && shot.panels.every((p) => p.status === 'Completed')
+          const allPanelsCompleted =
+            shot.panels?.length > 0 &&
+            shot.panels.every(
+              (p) =>
+                p.status === 'Completed' ||
+                (p.status || '').toLowerCase() === 'completed' ||
+                (p.status || '').toLowerCase() === 'done'
+            )
           const isLagging = (isAssigned || shot.isAnimated) && !allPanelsCompleted && diffDays >= 3
 
           return (
@@ -2832,123 +3018,59 @@ export const ArtTrackerTab = ({
                 </div>
               </div>
 
-              {/* Panels Table or Animated Shot Update Box */}
-              {shot.isAnimated ? (
-                <div
-                  style={{
-                    padding: '10px 14px',
-                    background: 'var(--bg-main)',
-                    borderTop: '1px solid var(--border-medium)',
-                  }}
-                >
-                  <div
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      marginBottom: '6px',
-                      flexWrap: 'wrap',
-                      gap: '6px',
-                    }}
-                  >
-                    <div
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '6px',
-                        fontSize: '11px',
-                        fontWeight: 700,
-                        color: 'var(--color-purple)',
-                      }}
-                    >
-                      <Sparkles size={12} />
-                      <span>ANIMATION WIP / UPDATE</span>
-                      <span style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 400 }}>
-                        (Discord message link or progress log)
-                      </span>
-                    </div>
-
-                    <div style={{ fontSize: '9.5px', color: 'var(--text-dim)', fontFamily: 'var(--font-mono)' }}>
-                      Last Touch (EST): {formatEST(shot.updatedAt) || '—'}
-                    </div>
-                  </div>
-
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <input
-                      type="text"
-                      value={shot.latestAnimationUpdate || ''}
-                      placeholder="Paste Discord message link or latest animation update..."
-                      onChange={(e) => onUpdateShot(shot.id, { latestAnimationUpdate: e.target.value })}
-                      style={{
-                        flex: 1,
-                        fontSize: '11px',
-                        padding: '5px 8px',
-                        background: 'var(--bg-surface)',
-                        border: '1px solid var(--border-medium)',
-                        borderRadius: 'var(--radius-xs)',
-                        color: 'var(--text-main)',
-                      }}
-                    />
-                    {shot.latestAnimationUpdate && (
-                      <a
-                        href={shot.latestAnimationUpdate}
-                        target="_blank"
-                        rel="noreferrer"
+              {/* Panels Table */}
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
+                <thead>
+                  <tr style={{ background: 'var(--bg-main)', borderBottom: '1px solid var(--border-medium)' }}>
+                    <th style={{ width: '60px', padding: '5px 8px', textAlign: 'center', color: 'var(--text-dim)', fontSize: '10px' }}>
+                      PANEL
+                    </th>
+                    <th style={{ width: '120px', padding: '5px 8px', textAlign: 'left', color: 'var(--text-dim)', fontSize: '10px' }}>
+                      TYPE & PAY
+                    </th>
+                    <th style={{ padding: '5px 8px', textAlign: 'left', color: 'var(--text-dim)', fontSize: '10px' }}>
+                      SCRIPT & DIRECTION NOTES
+                    </th>
+                    <th style={{ width: '80px', padding: '5px 8px', textAlign: 'center', color: 'var(--text-dim)', fontSize: '10px' }}>
+                      SKETCH OK
+                    </th>
+                    <th style={{ width: shot.isAnimated ? '200px' : '140px', padding: '5px 8px', textAlign: 'center', color: 'var(--text-dim)', fontSize: '10px' }}>
+                      {shot.isAnimated ? 'STATUS / PROGRESS' : 'STATUS (CLICK TO CYCLE)'}
+                    </th>
+                    <th style={{ width: '130px', padding: '5px 8px', textAlign: 'right', color: 'var(--text-dim)', fontSize: '10px' }}>
+                      LAST TOUCH (EST)
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(!shot.panels || shot.panels.length === 0) ? (
+                    <tr>
+                      <td
+                        colSpan={6}
                         style={{
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: '4px',
-                          padding: '4px 8px',
-                          borderRadius: 'var(--radius-xs)',
-                          background: 'rgba(88, 101, 242, 0.18)',
-                          border: '1px solid #5865f2',
-                          color: '#5865f2',
-                          fontSize: '10.5px',
-                          fontWeight: 600,
-                          textDecoration: 'none',
-                          whiteSpace: 'nowrap',
+                          padding: '12px',
+                          textAlign: 'center',
+                          color: 'var(--text-dim)',
+                          fontSize: '11px',
+                          fontStyle: 'italic',
                         }}
-                        title="Open Discord update link"
                       >
-                        <span>Open Link</span>
-                        <ExternalLink size={10} />
-                      </a>
-                    )}
-                  </div>
-                </div>
-              ) : (
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
-                  <thead>
-                    <tr style={{ background: 'var(--bg-main)', borderBottom: '1px solid var(--border-medium)' }}>
-                      <th style={{ width: '60px', padding: '5px 8px', textAlign: 'center', color: 'var(--text-dim)', fontSize: '10px' }}>
-                        PANEL
-                      </th>
-                      <th style={{ width: '120px', padding: '5px 8px', textAlign: 'left', color: 'var(--text-dim)', fontSize: '10px' }}>
-                        TYPE & PAY
-                      </th>
-                      <th style={{ padding: '5px 8px', textAlign: 'left', color: 'var(--text-dim)', fontSize: '10px' }}>
-                        SCRIPT & DIRECTION NOTES
-                      </th>
-                      <th style={{ width: '80px', padding: '5px 8px', textAlign: 'center', color: 'var(--text-dim)', fontSize: '10px' }}>
-                        SKETCH OK
-                      </th>
-                      <th style={{ width: '140px', padding: '5px 8px', textAlign: 'center', color: 'var(--text-dim)', fontSize: '10px' }}>
-                        STATUS (CLICK TO CYCLE)
-                      </th>
-                      <th style={{ width: '130px', padding: '5px 8px', textAlign: 'right', color: 'var(--text-dim)', fontSize: '10px' }}>
-                        LAST TOUCH (EST)
-                      </th>
+                        No panels defined for this shot
+                      </td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {shot.panels?.map((panel) => {
-                      const isCompleted = panel.status === 'Completed'
+                  ) : (
+                    shot.panels.map((panel) => {
+                      const isPanelAnimated = Boolean(shot.isAnimated || panel.type === 'ANIMATED')
+                      const isCompleted =
+                        panel.status === 'Completed' ||
+                        (panel.status || '').toLowerCase() === 'completed' ||
+                        (panel.status || '').toLowerCase() === 'done'
 
                       let statusClass = 'status-not-started'
                       if (panel.status === 'Sketched') statusClass = 'status-sketched'
                       if (panel.status === 'Lined') statusClass = 'status-lined'
                       if (panel.status === 'Colored') statusClass = 'status-colored'
-                      if (panel.status === 'Completed') statusClass = 'status-completed'
+                      if (isCompleted) statusClass = 'status-completed'
 
                       return (
                         <tr
@@ -2965,7 +3087,11 @@ export const ArtTrackerTab = ({
                               textAlign: 'center',
                               fontFamily: 'var(--font-mono)',
                               fontWeight: 700,
-                              color: isCompleted ? 'var(--color-green)' : 'var(--color-amber)',
+                              color: isCompleted
+                                ? 'var(--color-green)'
+                                : isPanelAnimated
+                                ? 'var(--color-purple)'
+                                : 'var(--color-amber)',
                               borderRight: '1px solid var(--border-subtle)',
                             }}
                           >
@@ -2974,9 +3100,25 @@ export const ArtTrackerTab = ({
 
                           {/* Type & Pay */}
                           <td style={{ padding: '6px 8px', borderRight: '1px solid var(--border-subtle)' }}>
-                            <div style={{ fontWeight: 600, fontSize: '10.5px' }}>{panel.type}</div>
+                            {isPanelAnimated ? (
+                              <div
+                                style={{
+                                  fontWeight: 700,
+                                  fontSize: '10.5px',
+                                  color: 'var(--color-purple)',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '3px',
+                                }}
+                              >
+                                <Sparkles size={11} />
+                                <span>ANIMATION</span>
+                              </div>
+                            ) : (
+                              <div style={{ fontWeight: 600, fontSize: '10.5px' }}>{panel.type}</div>
+                            )}
                             <div style={{ color: 'var(--color-green)', fontSize: '10.5px', fontWeight: 600 }}>
-                              ${panel.price}
+                              ${panel.price || (isPanelAnimated && shot.customPrice ? shot.customPrice : 0)}
                             </div>
                           </td>
 
@@ -3018,16 +3160,32 @@ export const ArtTrackerTab = ({
                             </button>
                           </td>
 
-                          {/* CLICK-TO-CYCLE STATUS BUTTON */}
+                          {/* CLICK-TO-CYCLE STATUS BUTTON OR TEXT BOX FOR ANIMATION */}
                           <td style={{ padding: '6px 8px', textAlign: 'center', borderRight: '1px solid var(--border-subtle)' }}>
-                            <button
-                              onClick={() => cyclePanelStatus(shot.id, panel)}
-                              title="Click to cycle: Not Started → Sketched → Lined → Colored → Completed"
-                              className={`status-cycle-btn ${statusClass}`}
-                              style={{ padding: '3px 8px', fontSize: '10.5px' }}
-                            >
-                              {panel.status}
-                            </button>
+                            {isPanelAnimated ? (
+                              <AnimationStatusInput
+                                initialValue={
+                                  panel.status && panel.status !== 'Not Started'
+                                    ? panel.status
+                                    : (shot.latestAnimationUpdate || panel.status || '')
+                                }
+                                onSave={(val) => {
+                                  onUpdatePanel(shot.id, panel.id, { status: val })
+                                  if (shot.isAnimated) {
+                                    onUpdateShot(shot.id, { latestAnimationUpdate: val })
+                                  }
+                                }}
+                              />
+                            ) : (
+                              <button
+                                onClick={() => cyclePanelStatus(shot.id, panel)}
+                                title="Click to cycle: Not Started → Sketched → Lined → Colored → Completed"
+                                className={`status-cycle-btn ${statusClass}`}
+                                style={{ padding: '3px 8px', fontSize: '10.5px' }}
+                              >
+                                {panel.status}
+                              </button>
+                            )}
                           </td>
 
                           {/* Last Updated Timestamp (EST) */}
@@ -3045,10 +3203,10 @@ export const ArtTrackerTab = ({
                           </td>
                         </tr>
                       )
-                    })}
-                  </tbody>
-                </table>
-              )}
+                    })
+                  )}
+                </tbody>
+              </table>
             </div>
           )
         })}

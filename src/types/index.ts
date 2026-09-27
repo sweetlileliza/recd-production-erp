@@ -12,6 +12,7 @@ export type PanelStatus =
   | 'Lined'
   | 'Colored'
   | 'Completed'
+  | (string & {})
 
 export const PRICING_RULES: Record<PanelType, number> = {
   'COMPLEX BASE': 36,
