@@ -42,6 +42,9 @@ export function initFirestore(): Firestore | null {
         raw = Buffer.from(raw, 'base64').toString('utf-8')
       }
       const serviceAccount = JSON.parse(raw)
+      if (serviceAccount.private_key && typeof serviceAccount.private_key === 'string') {
+        serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n')
+      }
       appInstance = initializeApp({
         credential: cert(serviceAccount),
         projectId: serviceAccount.project_id || projectId,
