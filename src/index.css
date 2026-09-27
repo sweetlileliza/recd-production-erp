@@ -1,0 +1,265 @@
+:root {
+  /* Official Discord Dark Mode Palette */
+  --bg-primary: #313338;          /* Main workspace & chat area */
+  --bg-secondary: #2b2d31;        /* Sidebars, headers, cards */
+  --bg-tertiary: #1e1f22;         /* Server rail, deep panels, input fields */
+  --bg-floating: #232428;         /* Modals, menus, popouts */
+  --bg-hover: #35373c;            /* Item hover */
+  --bg-active: #404249;           /* Item active / selected */
+
+  /* Legacy variable mappings routed to Discord colors */
+  --bg-main: var(--bg-primary);
+  --bg-surface: var(--bg-secondary);
+  --bg-surface-elevated: var(--bg-secondary);
+  --bg-card: var(--bg-secondary);
+  --bg-card-hover: var(--bg-hover);
+  
+  --border-subtle: #3f4147;
+  --border-medium: #383a40;
+  --border-dark: #1e1f22;
+  --border-accent: #5865f2;
+
+  --text-main: #dbdee1;
+  --text-header: #f2f3f5;
+  --text-muted: #949ba4;
+  --text-dim: #80848e;
+  --text-link: #00a8fc;
+
+  /* Discord Brand Accent Colors */
+  --color-primary: #5865f2;       /* Discord Blurple */
+  --color-primary-hover: #4752c4;
+  --color-green: #23a55a;         /* Discord Online / Success */
+  --color-green-soft: rgba(35, 165, 90, 0.16);
+  --color-yellow: #f0b232;        /* Discord Idle / Warning */
+  --color-yellow-soft: rgba(240, 178, 50, 0.16);
+  --color-amber: #f0b232;
+  --color-amber-soft: rgba(240, 178, 50, 0.16);
+  --color-red: #f23f43;           /* Discord DND / Danger */
+  --color-red-soft: rgba(242, 63, 67, 0.16);
+  --color-purple: #9b59b6;        /* Discord Nitro / Streaming */
+  --color-purple-soft: rgba(155, 89, 182, 0.16);
+  --color-cyan: #00a8fc;
+  --color-cyan-soft: rgba(0, 168, 252, 0.16);
+  --color-fuchsia: #eb459e;
+
+  /* Compact spacing & radii */
+  --radius-xs: 3px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-full: 9999px;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 10px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 10px 25px rgba(0, 0, 0, 0.5);
+
+  --font-sans: 'gg sans', 'Noto Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  --font-mono: 'Consolas', 'Courier New', Courier, monospace;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: var(--bg-primary);
+  color: var(--text-main);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  line-height: 1.35;
+  -webkit-font-smoothing: antialiased;
+  min-height: 100vh;
+}
+
+/* Headings */
+h1, h2, h3, h4, strong {
+  color: var(--text-header);
+}
+
+button {
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  border: none;
+  background: none;
+  border-radius: var(--radius-xs);
+  transition: background-color 0.12s ease, color 0.12s ease, transform 0.08s ease;
+}
+
+button:active {
+  transform: scale(0.98);
+}
+
+input, select, textarea {
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--text-main);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-xs);
+  padding: 4px 8px;
+  outline: none;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+input:focus, select:focus, textarea:focus {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 1px var(--color-primary);
+}
+
+/* Discord Dark Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg-tertiary);
+}
+::-webkit-scrollbar-thumb {
+  background: #1a1b1e;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #111214;
+}
+
+/* Status Cycle Buttons */
+.status-cycle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 7px;
+  border-radius: var(--radius-xs);
+  font-size: 10.5px;
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.12s ease;
+  white-space: nowrap;
+}
+
+.status-cycle-btn:active {
+  transform: scale(0.95);
+}
+
+.status-not-started {
+  background: rgba(148, 155, 164, 0.1);
+  color: var(--text-muted);
+  border: 1px solid rgba(148, 155, 164, 0.25);
+}
+.status-not-started:hover {
+  background: rgba(148, 155, 164, 0.18);
+  color: var(--text-header);
+}
+
+.status-sketched {
+  background: var(--color-yellow-soft);
+  color: var(--color-yellow);
+  border: 1px solid rgba(240, 178, 50, 0.35);
+}
+.status-sketched:hover {
+  background: rgba(240, 178, 50, 0.25);
+}
+
+.status-lined {
+  background: var(--color-cyan-soft);
+  color: #00a8fc;
+  border: 1px solid rgba(0, 168, 252, 0.35);
+}
+.status-lined:hover {
+  background: rgba(0, 168, 252, 0.25);
+}
+
+.status-colored {
+  background: var(--color-purple-soft);
+  color: #c084fc;
+  border: 1px solid rgba(192, 132, 252, 0.35);
+}
+.status-colored:hover {
+  background: rgba(192, 132, 252, 0.25);
+}
+
+.status-completed {
+  background: var(--color-green-soft);
+  color: var(--color-green);
+  border: 1px solid rgba(35, 165, 90, 0.35);
+}
+.status-completed:hover {
+  background: rgba(35, 165, 90, 0.25);
+}
+
+/* Badges */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1.5px 6px;
+  border-radius: var(--radius-xs);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+}
+
+.badge-amber {
+  background: var(--color-yellow-soft);
+  color: var(--color-yellow);
+  border: 1px solid rgba(240, 178, 50, 0.3);
+}
+
+.badge-green {
+  background: var(--color-green-soft);
+  color: var(--color-green);
+  border: 1px solid rgba(35, 165, 90, 0.3);
+}
+
+.badge-blue {
+  background: rgba(88, 101, 242, 0.15);
+  color: #5865f2;
+  border: 1px solid rgba(88, 101, 242, 0.3);
+}
+
+.badge-purple {
+  background: var(--color-purple-soft);
+  color: #c084fc;
+  border: 1px solid rgba(192, 132, 252, 0.3);
+}
+
+.badge-red {
+  background: var(--color-red-soft);
+  color: var(--color-red);
+  border: 1px solid rgba(242, 63, 67, 0.3);
+}
+
+.badge-dim {
+  background: rgba(148, 155, 164, 0.1);
+  color: var(--text-dim);
+  border: 1px solid var(--border-subtle);
+}
+
+/* Modal Overlay & Card (Discord Modal Style) */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 999;
+  padding: 12px;
+}
+
+.modal-content {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-lg);
+  width: 100%;
+  max-width: 580px;
+  max-height: 88vh;
+  overflow-y: auto;
+  box-shadow: var(--shadow-lg);
+  padding: 16px 20px;
+}
