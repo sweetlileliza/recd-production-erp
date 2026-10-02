@@ -5,8 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:all": "concurrently \"npm run dev:server\" \"npm run dev:client\" \"node bot.js\"",
     "dev:client": "vite",
     "dev:server": "tsx watch server/index.ts",
+    "dev:bot": "node bot.js",
     "build": "npm run build:client && npm run build:server",
     "build:client": "tsc -b && vite build",
     "build:server": "esbuild server/index.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/server.js",
@@ -21,7 +23,8 @@
   },
   "dependencies": {
     "cors": "^2.8.6",
-    "dotenv": "^18.0.4",
+    "discord.js": "^14.27.0",
+    "dotenv": "^18.0.5",
     "express": "^5.2.1",
     "firebase-admin": "^14.5.0",
     "lucide-react": "^1.48.0",
