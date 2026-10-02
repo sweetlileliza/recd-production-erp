@@ -296,7 +296,30 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName('stopttracking')
-    .setDescription('Stop the 3-day recurring progress tracking timer in this channel (alias)')
+    .setDescription('Stop the 3-day recurring progress tracking timer in this channel (alias)'),
+
+  new SlashCommandBuilder()
+    .setName('approvesketch')
+    .setDescription('Approve or toggle Sketch OK for a specific panel in a shot')
+    .addStringOption(opt =>
+      opt.setName('project')
+        .setDescription('Select project')
+        .setRequired(true)
+        .setAutocomplete(true))
+    .addStringOption(opt =>
+      opt.setName('shot')
+        .setDescription('Select shot number')
+        .setRequired(true)
+        .setAutocomplete(true))
+    .addStringOption(opt =>
+      opt.setName('panel')
+        .setDescription('Select panel code')
+        .setRequired(true)
+        .setAutocomplete(true))
+    .addBooleanOption(opt =>
+      opt.setName('approved')
+        .setDescription('Approve (true) or revoke approval (false). Default: true')
+        .setRequired(false))
 ].map(cmd => cmd.toJSON());
 
 // 2. Register Slash Commands with Discord
@@ -316,7 +339,7 @@ async function registerCommands() {
         { body: commands }
       );
     }
-    console.log('Slash commands registered successfully! (/artstatus, /bottlenecks, /health, /roster, /panels, /updatepanel, /starttracking, /stoptracking)');
+    console.log('Slash commands registered successfully! (/artstatus, /bottlenecks, /health, /roster, /panels, /updatepanel, /starttracking, /stoptracking, /approvesketch)');
   } catch (error) {
     console.error('Failed to register commands:', error);
   }
@@ -392,8 +415,9 @@ client.on('interactionCreate', async (interaction) => {
           filteredPanels.slice(0, 25).map((pn) => {
             const code = pn.panelCode || pn.panelLetter || `Panel ${pn.panelNumber}`;
             const status = pn.status || 'Not Started';
+            const okTag = pn.sketchOk ? ' ✓OK' : '';
             return {
-              name: `Panel ${code} [${status}]${pn.artist ? ` • ${pn.artist}` : ''}`.slice(0, 100),
+              name: `Panel ${code} [${status}${okTag}]${pn.artist ? ` • ${pn.artist}` : ''}`.slice(0, 100),
               value: pn.id
             };
           })
@@ -877,6 +901,109 @@ client.on('interactionCreate', async (interaction) => {
     } catch (err) {
       console.error('Error stopping tracking:', err);
       await interaction.editReply(`❌ Failed to stop tracking: ${err.message}`);
+    }
+  }
+
+  // --- /approvesketch ---
+  if (interaction.commandName === 'approvesketch') {
+    await interaction.deferReply();
+
+    const projectInput = interaction.options.getString('project');
+    const shotInput = interaction.options.getString('shot');
+    const panelInput = interaction.options.getString('panel');
+    const approved = interaction.options.getBoolean('approved') ?? true;
+
+    try {
+      const projects = await getCachedProjects(true);
+
+      const targetProj = projects.find(
+        (p) => p.id === projectInput || p.title?.toLowerCase().includes((projectInput || '').toLowerCase())
+      );
+      if (!targetProj) {
+        return interaction.editReply(`❌ Project matching "${projectInput}" not found.`);
+      }
+
+      const targetShot = targetProj.shots?.find(
+        (s) => s.id === shotInput || s.shotNumber === parseInt(shotInput || '', 10)
+      );
+      if (!targetShot) {
+        return interaction.editReply(`❌ Shot "${shotInput}" not found in project "${targetProj.title}".`);
+      }
+
+      const targetPanel = targetShot.panels?.find(
+        (pn) =>
+          pn.id === panelInput ||
+          pn.panelCode?.toLowerCase() === (panelInput || '').toLowerCase() ||
+          pn.panelLetter?.toLowerCase() === (panelInput || '').toLowerCase() ||
+          pn.panelNumber === parseInt(panelInput || '', 10)
+      );
+      if (!targetPanel) {
+        return interaction.editReply(
+          `❌ Panel "${panelInput}" not found in Shot ${targetShot.shotNumber || targetShot.id}.`
+        );
+      }
+
+      let result;
+      if (internalServices?.updatePanel) {
+        const res = await internalServices.updatePanel(targetProj.id, targetShot.id, targetPanel.id, {
+          sketchOk: approved,
+        });
+        if (!res) {
+          return interaction.editReply('❌ Panel or shot not found in the database.');
+        }
+        result = res;
+      } else {
+        const updateRes = await fetch(
+          `${API_BASE}/projects/${targetProj.id}/shots/${targetShot.id}/panels/${targetPanel.id}`,
+          {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sketchOk: approved })
+          }
+        );
+
+        if (!updateRes.ok) {
+          const errJson = await updateRes.json().catch(() => ({}));
+          return interaction.editReply(`❌ Failed to update sketch approval: ${errJson.error || updateRes.statusText}`);
+        }
+
+        result = await updateRes.json();
+      }
+
+      lastProjectsFetch = 0; // Invalidate cache so changes reflect immediately
+
+      const panelName = targetPanel.panelCode || targetPanel.panelLetter || targetPanel.id;
+      const embed = new EmbedBuilder()
+        .setTitle(approved ? '✅ Sketch Approved!' : '⚠️ Sketch Approval Revoked')
+        .setColor(approved ? 0x10B981 : 0xF59E0B)
+        .setDescription(
+          approved
+            ? `**Sketch OK** is now verified for **Panel ${panelName}**. The artist has the green light to proceed to lineart!`
+            : `**Sketch OK** approval was removed for **Panel ${panelName}**.`
+        )
+        .addFields(
+          { name: 'Project', value: targetProj.title, inline: true },
+          { name: 'Shot', value: `Shot **${targetShot.shotNumber}**`, inline: true },
+          { name: 'Panel', value: `Panel **${panelName}**`, inline: true },
+          { name: 'Sketch OK', value: approved ? '🟢 `true` (Approved)' : '🔴 `false` (Pending)', inline: true },
+          { name: 'Status', value: `\`${result.panel?.status || targetPanel.status || 'Not Started'}\``, inline: true },
+          { 
+            name: 'Drive Link', 
+            value: (result.panel?.driveLink || targetPanel.driveLink) 
+              ? `[Open Sketch Artwork](${result.panel?.driveLink || targetPanel.driveLink})` 
+              : '*No Drive link submitted yet*', 
+            inline: false 
+          },
+          { name: 'Updated By', value: `<@${interaction.user.id}> (${interaction.user.username})`, inline: true },
+          { name: 'Timestamp', value: new Date().toLocaleTimeString(), inline: true }
+        )
+        .setTimestamp()
+        .setFooter({ text: 'RECD ERP Real-Time Sync' });
+
+      await interaction.editReply({ embeds: [embed] });
+    } catch (err) {
+      console.error('Error in /approvesketch:', err);
+      await interaction.editReply(`❌ An error occurred while approving sketch: ${err.message}`);
     }
   }
 });
