@@ -7,6 +7,8 @@ import {
   EmbedBuilder 
 } from 'discord.js';
 import dotenv from 'dotenv';
+import fs from 'fs';
+import path from 'path';
 
 dotenv.config();
 
@@ -45,6 +47,162 @@ async function getCachedProjects(force = false) {
     console.error('Error refreshing projects cache:', err);
   }
   return projectsCache;
+}
+
+// ----------------- TRACKER PERSISTENCE & HELPERS -----------------
+const TRACKERS_FILE = path.resolve(process.cwd(), 'server', 'data', 'trackers.json');
+const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000;
+
+function loadTrackers() {
+  try {
+    if (fs.existsSync(TRACKERS_FILE)) {
+      const raw = fs.readFileSync(TRACKERS_FILE, 'utf-8');
+      return JSON.parse(raw);
+    }
+  } catch (err) {
+    console.error('Error reading trackers.json:', err);
+  }
+  return [];
+}
+
+function saveTrackers(trackers) {
+  try {
+    const dir = path.dirname(TRACKERS_FILE);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(TRACKERS_FILE, JSON.stringify(trackers, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('Error saving trackers.json:', err);
+  }
+}
+
+const STATUS_RANKS = {
+  '': 0,
+  'not started': 0,
+  'sketched': 1,
+  'lined': 2,
+  'colored': 3,
+  'completed': 4,
+};
+
+function generateTrackingEmbed(project, targetStatus, isInitial = false) {
+  const targetRank = STATUS_RANKS[targetStatus.toLowerCase()] ?? 2;
+  const shots = project.shots || [];
+  
+  const pendingByShot = [];
+  let totalPendingPanels = 0;
+  let totalPanels = 0;
+
+  shots.forEach((shot) => {
+    const panels = shot.panels || [];
+    totalPanels += panels.length;
+    const behindPanels = panels.filter((p) => {
+      const rank = STATUS_RANKS[(p.status || '').toLowerCase()] ?? 0;
+      return rank < targetRank;
+    });
+
+    if (behindPanels.length > 0) {
+      totalPendingPanels += behindPanels.length;
+      pendingByShot.push({
+        shotNumber: shot.shotNumber,
+        assignedArtist: shot.assignedArtist,
+        panels: behindPanels,
+      });
+    }
+  });
+
+  const embed = new EmbedBuilder()
+    .setTitle(`⏱️ ${project.title} — Progress Tracking (Target: ${targetStatus})`)
+    .setTimestamp()
+    .setFooter({ text: 'RECD Auto-Tracker • Recurring every 3 days • Stop with /stoptracking' });
+
+  if (totalPendingPanels === 0) {
+    embed
+      .setColor(0x10B981) // Green
+      .setDescription(
+        `🎉 **Milestone Reached!** All **${totalPanels}** panels in **${project.title}** have reached or passed the **${targetStatus}** stage!`
+      );
+    return { embed, totalPendingPanels };
+  }
+
+  embed
+    .setColor(0xF59E0B) // Amber
+    .setDescription(
+      `${isInitial ? '🚀 **Tracking Activated!**\n' : '⏰ **3-Day Progress Update**\n'}Found **${totalPendingPanels}** panel(s) across **${pendingByShot.length}** shot(s) that have **not yet reached \`${targetStatus}\`**:`
+    );
+
+  // Group by shot (show up to 15 shots to stay within Discord embed limits)
+  pendingByShot.slice(0, 15).forEach((group) => {
+    const artistStr = group.assignedArtist ? `👤 ${group.assignedArtist}` : '⚠️ *Unassigned*';
+    const panelSummary = group.panels
+      .map((p) => {
+        const code = p.panelCode || p.panelLetter || `P${p.panelNumber}`;
+        const st = p.status || 'Not Started';
+        return `\`${code}\` (${st})`;
+      })
+      .join(', ');
+
+    embed.addFields({
+      name: `Shot ${group.shotNumber} (${artistStr}) — ${group.panels.length} pending`,
+      value: panelSummary.slice(0, 1000),
+      inline: false,
+    });
+  });
+
+  if (pendingByShot.length > 15) {
+    embed.addFields({
+      name: '...',
+      value: `*+ ${pendingByShot.length - 15} more shot(s) with pending panels.*`,
+      inline: false,
+    });
+  }
+
+  return { embed, totalPendingPanels };
+}
+
+async function checkTrackers() {
+  const trackers = loadTrackers();
+  if (!trackers || trackers.length === 0) return;
+
+  const now = Date.now();
+  let updated = false;
+
+  for (const tracker of trackers) {
+    if (now >= (tracker.nextRunAt || 0)) {
+      try {
+        const channel = await client.channels.fetch(tracker.channelId).catch(() => null);
+        if (!channel || !channel.isTextBased()) {
+          console.warn(`[Auto-Tracker] Channel ${tracker.channelId} not found or not text-based.`);
+          tracker.nextRunAt = now + THREE_DAYS_MS;
+          updated = true;
+          continue;
+        }
+
+        const projects = await getCachedProjects(true);
+        const project = projects.find((p) => p.id === tracker.projectId);
+        if (!project) {
+          await channel.send(`⚠️ Tracking notice: Project "${tracker.projectTitle}" was not found or was deleted.`);
+          tracker.nextRunAt = now + THREE_DAYS_MS;
+          updated = true;
+          continue;
+        }
+
+        const { embed } = generateTrackingEmbed(project, tracker.targetStatus, false);
+        await channel.send({ embeds: [embed] });
+
+        tracker.lastRunAt = now;
+        tracker.nextRunAt = now + THREE_DAYS_MS;
+        updated = true;
+      } catch (err) {
+        console.error(`[Auto-Tracker] Error running tracker for channel ${tracker.channelId}:`, err);
+        tracker.nextRunAt = now + THREE_DAYS_MS;
+        updated = true;
+      }
+    }
+  }
+
+  if (updated) {
+    saveTrackers(trackers);
+  }
 }
 
 // 1. Define Slash Commands
@@ -111,7 +269,34 @@ const commands = [
     .addStringOption(opt => 
       opt.setName('drive_link')
         .setDescription('Google Drive link to completed artwork')
-        .setRequired(false))
+        .setRequired(false)),
+
+  new SlashCommandBuilder()
+    .setName('starttracking')
+    .setDescription('Send 3-day recurring progress alerts in this channel for panels below a target status')
+    .addStringOption(opt =>
+      opt.setName('project')
+        .setDescription('Select the project to track')
+        .setRequired(true)
+        .setAutocomplete(true))
+    .addStringOption(opt =>
+      opt.setName('progress')
+        .setDescription('Target progress level to check against')
+        .setRequired(true)
+        .addChoices(
+          { name: 'Sketched', value: 'Sketched' },
+          { name: 'Lined', value: 'Lined' },
+          { name: 'Colored', value: 'Colored' },
+          { name: 'Completed', value: 'Completed' }
+        )),
+
+  new SlashCommandBuilder()
+    .setName('stoptracking')
+    .setDescription('Stop the 3-day recurring progress tracking timer in this channel'),
+
+  new SlashCommandBuilder()
+    .setName('stopttracking')
+    .setDescription('Stop the 3-day recurring progress tracking timer in this channel (alias)')
 ].map(cmd => cmd.toJSON());
 
 // 2. Register Slash Commands with Discord
@@ -131,7 +316,7 @@ async function registerCommands() {
         { body: commands }
       );
     }
-    console.log('Slash commands registered successfully! (/artstatus, /bottlenecks, /health, /roster, /panels, /updatepanel)');
+    console.log('Slash commands registered successfully! (/artstatus, /bottlenecks, /health, /roster, /panels, /updatepanel, /starttracking, /stoptracking)');
   } catch (error) {
     console.error('Failed to register commands:', error);
   }
@@ -619,6 +804,81 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.editReply(`❌ An error occurred while updating the panel: ${err.message}`);
     }
   }
+
+  // --- /starttracking ---
+  if (interaction.commandName === 'starttracking') {
+    await interaction.deferReply();
+
+    const projectInput = interaction.options.getString('project');
+    const targetStatus = interaction.options.getString('progress');
+
+    try {
+      const projects = await getCachedProjects(true);
+      const targetProj = projects.find(
+        (p) => p.id === projectInput || p.title?.toLowerCase().includes((projectInput || '').toLowerCase())
+      );
+
+      if (!targetProj) {
+        return interaction.editReply(`❌ Project matching "${projectInput}" not found.`);
+      }
+
+      const trackers = loadTrackers();
+      const existingIndex = trackers.findIndex((t) => t.channelId === interaction.channelId);
+
+      const now = Date.now();
+      const newTracker = {
+        channelId: interaction.channelId,
+        guildId: interaction.guildId,
+        projectId: targetProj.id,
+        projectTitle: targetProj.title,
+        targetStatus,
+        createdAt: now,
+        lastRunAt: now,
+        nextRunAt: now + THREE_DAYS_MS,
+      };
+
+      if (existingIndex >= 0) {
+        trackers[existingIndex] = newTracker;
+      } else {
+        trackers.push(newTracker);
+      }
+      saveTrackers(trackers);
+
+      const { embed } = generateTrackingEmbed(targetProj, targetStatus, true);
+
+      await interaction.editReply({
+        content: `🔔 **3-Day Progress Tracking Activated!**\nTracking project **${targetProj.title}** for all panels not yet at status **\`${targetStatus}\`**.\nThis channel (<#${interaction.channelId}>) will receive automated updates **every 3 days**.\n*Use \`/stoptracking\` anytime in this channel to stop.*`,
+        embeds: [embed],
+      });
+    } catch (err) {
+      console.error('Error starting tracking:', err);
+      await interaction.editReply(`❌ Failed to start tracking: ${err.message}`);
+    }
+  }
+
+  // --- /stoptracking (and alias /stopttracking) ---
+  if (interaction.commandName === 'stoptracking' || interaction.commandName === 'stopttracking') {
+    await interaction.deferReply();
+
+    try {
+      const trackers = loadTrackers();
+      const existingIndex = trackers.findIndex((t) => t.channelId === interaction.channelId);
+
+      if (existingIndex < 0) {
+        return interaction.editReply('ℹ️ No active progress tracking timer found in this channel. You can start one with `/starttracking`.');
+      }
+
+      const [removed] = trackers.splice(existingIndex, 1);
+      saveTrackers(trackers);
+
+      return interaction.editReply(
+        `🛑 **Progress tracking stopped.** Cancelled the 3-day updates for **${removed.projectTitle}** (Target: \`${removed.targetStatus}\`) in this channel.`
+      );
+    } catch (err) {
+      console.error('Error stopping tracking:', err);
+      await interaction.editReply(`❌ Failed to stop tracking: ${err.message}`);
+    }
+  }
 });
 
 // 4. Start the Bot
@@ -641,6 +901,11 @@ export async function startBot(services = null) {
   client.once('ready', () => {
     console.log(`🤖 [Discord Bot] Logged in as ${client.user.tag}!`);
     registerCommands();
+
+    // Check trackers every 60 seconds
+    setInterval(checkTrackers, 60000);
+    // Also run an immediate check on startup in case any tracker became due while offline
+    checkTrackers().catch(console.error);
   });
 
   try {

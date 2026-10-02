@@ -525,10 +525,31 @@ export const ArtTrackerTab = ({
   // Status cycle sequence
   const statusCycle: PanelStatus[] = ['Not Started', 'Sketched', 'Lined', 'Colored', 'Completed']
 
+  const latestPanelStatusRef = useRef<Record<string, PanelStatus>>({})
+  const latestSketchOkRef = useRef<Record<string, boolean>>({})
+
+  // Keep latestPanelStatusRef and latestSketchOkRef clean when props update
+  useEffect(() => {
+    if (project.shots) {
+      project.shots.forEach((shot) => {
+        shot.panels?.forEach((panel) => {
+          if (latestPanelStatusRef.current[panel.id] === panel.status) {
+            delete latestPanelStatusRef.current[panel.id]
+          }
+          if (latestSketchOkRef.current[panel.id] === panel.sketchOk) {
+            delete latestSketchOkRef.current[panel.id]
+          }
+        })
+      })
+    }
+  }, [project.shots])
+
   const cyclePanelStatus = (shotId: string, panel: Panel) => {
-    const currentIdx = statusCycle.indexOf(panel.status)
+    const currentStatus = latestPanelStatusRef.current[panel.id] ?? panel.status
+    const currentIdx = statusCycle.indexOf(currentStatus)
     const nextIdx = (currentIdx + 1) % statusCycle.length
     const nextStatus = statusCycle[nextIdx]
+    latestPanelStatusRef.current[panel.id] = nextStatus
     onUpdatePanel(shotId, panel.id, { status: nextStatus })
   }
 
@@ -3061,15 +3082,18 @@ export const ArtTrackerTab = ({
                   ) : (
                     shot.panels.map((panel) => {
                       const isPanelAnimated = Boolean(shot.isAnimated || panel.type === 'ANIMATED')
+                      const panelStatus = latestPanelStatusRef.current[panel.id] ?? panel.status
+                      const panelSketchOk = latestSketchOkRef.current[panel.id] ?? panel.sketchOk
+
                       const isCompleted =
-                        panel.status === 'Completed' ||
-                        (panel.status || '').toLowerCase() === 'completed' ||
-                        (panel.status || '').toLowerCase() === 'done'
+                        panelStatus === 'Completed' ||
+                        (panelStatus || '').toLowerCase() === 'completed' ||
+                        (panelStatus || '').toLowerCase() === 'done'
 
                       let statusClass = 'status-not-started'
-                      if (panel.status === 'Sketched') statusClass = 'status-sketched'
-                      if (panel.status === 'Lined') statusClass = 'status-lined'
-                      if (panel.status === 'Colored') statusClass = 'status-colored'
+                      if (panelStatus === 'Sketched') statusClass = 'status-sketched'
+                      if (panelStatus === 'Lined') statusClass = 'status-lined'
+                      if (panelStatus === 'Colored') statusClass = 'status-colored'
                       if (isCompleted) statusClass = 'status-completed'
 
                       return (
@@ -3139,7 +3163,9 @@ export const ArtTrackerTab = ({
                             <button
                               onClick={() => {
                                 if (canAssign) {
-                                  onUpdatePanel(shot.id, panel.id, { sketchOk: !panel.sketchOk })
+                                  const nextOk = !panelSketchOk
+                                  latestSketchOkRef.current[panel.id] = nextOk
+                                  onUpdatePanel(shot.id, panel.id, { sketchOk: nextOk })
                                 }
                               }}
                               disabled={!canAssign}
@@ -3148,15 +3174,15 @@ export const ArtTrackerTab = ({
                                 width: '22px',
                                 height: '22px',
                                 borderRadius: 'var(--radius-xs)',
-                                border: panel.sketchOk ? '1px solid var(--color-green)' : '1px solid var(--border-medium)',
-                                background: panel.sketchOk ? 'var(--color-green-soft)' : 'var(--bg-main)',
-                                color: panel.sketchOk ? 'var(--color-green)' : 'var(--text-dim)',
+                                border: panelSketchOk ? '1px solid var(--color-green)' : '1px solid var(--border-medium)',
+                                background: panelSketchOk ? 'var(--color-green-soft)' : 'var(--bg-main)',
+                                color: panelSketchOk ? 'var(--color-green)' : 'var(--text-dim)',
                                 display: 'inline-flex',
                                 alignItems: 'center',
                                 justifyContent: 'center',
                               }}
                             >
-                              {panel.sketchOk ? <Check size={13} strokeWidth={3} /> : <X size={11} />}
+                              {panelSketchOk ? <Check size={13} strokeWidth={3} /> : <X size={11} />}
                             </button>
                           </td>
 
@@ -3165,11 +3191,12 @@ export const ArtTrackerTab = ({
                             {isPanelAnimated ? (
                               <AnimationStatusInput
                                 initialValue={
-                                  panel.status && panel.status !== 'Not Started'
-                                    ? panel.status
-                                    : (shot.latestAnimationUpdate || panel.status || '')
+                                  panelStatus && panelStatus !== 'Not Started'
+                                    ? panelStatus
+                                    : (shot.latestAnimationUpdate || panelStatus || '')
                                 }
                                 onSave={(val) => {
+                                  latestPanelStatusRef.current[panel.id] = val
                                   onUpdatePanel(shot.id, panel.id, { status: val })
                                   if (shot.isAnimated) {
                                     onUpdateShot(shot.id, { latestAnimationUpdate: val })
@@ -3183,7 +3210,7 @@ export const ArtTrackerTab = ({
                                 className={`status-cycle-btn ${statusClass}`}
                                 style={{ padding: '3px 8px', fontSize: '10.5px' }}
                               >
-                                {panel.status}
+                                {panelStatus}
                               </button>
                             )}
                           </td>

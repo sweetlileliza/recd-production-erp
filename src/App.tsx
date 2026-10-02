@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import {
   FileCode,
   LayoutGrid,
@@ -281,7 +281,63 @@ export function App() {
     }
   }
 
-  // Update Single Shot
+  // Debounce maps for panel and shot updates
+  const panelDebounceTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
+  const pendingPanelUpdates = useRef<Record<string, Partial<Panel>>>({})
+  const panelUpdateSeq = useRef<Record<string, number>>({})
+
+  const shotDebounceTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
+  const pendingShotUpdates = useRef<Record<string, Partial<Shot>>>({})
+  const shotUpdateSeq = useRef<Record<string, number>>({})
+
+  const flushPendingUpdates = () => {
+    // Flush any pending panel updates immediately
+    Object.entries(panelDebounceTimers.current).forEach(([key, timer]) => {
+      clearTimeout(timer)
+      const payload = pendingPanelUpdates.current[key]
+      if (payload) {
+        const [projId, shotId, panelId] = key.split(':')
+        fetch(`/api/projects/${projId}/shots/${shotId}/panels/${panelId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+          keepalive: true,
+        }).catch(console.error)
+      }
+    })
+    panelDebounceTimers.current = {}
+    pendingPanelUpdates.current = {}
+
+    // Flush any pending shot updates immediately
+    Object.entries(shotDebounceTimers.current).forEach(([key, timer]) => {
+      clearTimeout(timer)
+      const payload = pendingShotUpdates.current[key]
+      if (payload) {
+        const [projId, shotId] = key.split(':')
+        fetch(`/api/projects/${projId}/shots/${shotId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+          keepalive: true,
+        }).catch(console.error)
+      }
+    })
+    shotDebounceTimers.current = {}
+    pendingShotUpdates.current = {}
+  }
+
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      flushPendingUpdates()
+    }
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload)
+      flushPendingUpdates()
+    }
+  }, [])
+
+  // Update Single Shot (Optimistic + Debounced Server Save)
   const handleUpdateShot = async (shotId: string, updates: Partial<Shot>) => {
     if (!activeProject) return
 
@@ -301,33 +357,57 @@ export function App() {
       })
     )
 
-    try {
-      const res = await fetch(`/api/projects/${activeProject.id}/shots/${shotId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updates),
-      })
-      if (res.ok) {
-        const updatedShot = await res.json()
-        setActiveProject((prev) => {
-          if (!prev) return null
-          const updatedShots = prev.shots?.map((s) => (s.id === shotId ? { ...s, ...updatedShot } : s))
-          return { ...prev, shots: updatedShots }
-        })
-        setProjects((prevProjects) =>
-          prevProjects.map((p) => {
-            if (p.id !== activeProject.id) return p
-            const updatedShots = p.shots?.map((s) => (s.id === shotId ? { ...s, ...updatedShot } : s))
-            return { ...p, shots: updatedShots }
-          })
-        )
-      }
-    } catch (err) {
-      console.error('Error updating shot:', err)
+    const projectId = activeProject.id
+    const key = `${projectId}:${shotId}`
+
+    pendingShotUpdates.current[key] = {
+      ...(pendingShotUpdates.current[key] || {}),
+      ...updates,
     }
+
+    shotUpdateSeq.current[key] = (shotUpdateSeq.current[key] || 0) + 1
+    const currentSeq = shotUpdateSeq.current[key]
+
+    if (shotDebounceTimers.current[key]) {
+      clearTimeout(shotDebounceTimers.current[key])
+    }
+
+    shotDebounceTimers.current[key] = setTimeout(async () => {
+      delete shotDebounceTimers.current[key]
+      const payload = pendingShotUpdates.current[key]
+      delete pendingShotUpdates.current[key]
+      if (!payload || Object.keys(payload).length === 0) return
+
+      try {
+        const res = await fetch(`/api/projects/${projectId}/shots/${shotId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        })
+        if (res.ok) {
+          const updatedShot = await res.json()
+          if (updatedShot && shotUpdateSeq.current[key] === currentSeq) {
+            setActiveProject((prev) => {
+              if (!prev || prev.id !== projectId) return prev
+              const updatedShots = prev.shots?.map((s) => (s.id === shotId ? { ...s, ...updatedShot } : s))
+              return { ...prev, shots: updatedShots }
+            })
+            setProjects((prevProjects) =>
+              prevProjects.map((p) => {
+                if (p.id !== projectId) return p
+                const updatedShots = p.shots?.map((s) => (s.id === shotId ? { ...s, ...updatedShot } : s))
+                return { ...p, shots: updatedShots }
+              })
+            )
+          }
+        }
+      } catch (err) {
+        console.error('Error updating shot:', err)
+      }
+    }, 500)
   }
 
-  // Update Single Panel
+  // Update Single Panel (Optimistic + Debounced Server Save)
   const handleUpdatePanel = async (shotId: string, panelId: string, updates: Partial<Panel>) => {
     if (!activeProject) return
 
@@ -355,40 +435,63 @@ export function App() {
       })
     )
 
-    try {
-      const res = await fetch(`/api/projects/${activeProject.id}/shots/${shotId}/panels/${panelId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updates),
-      })
-      if (res.ok) {
-        const data = await res.json()
-        if (data.panel) {
-          setActiveProject((prev) => {
-            if (!prev) return null
-            const updatedShots = prev.shots?.map((s) => {
-              if (s.id !== shotId) return s
-              const updatedPanels = s.panels?.map((p) => (p.id === panelId ? { ...p, ...data.panel } : p))
-              return { ...s, panels: updatedPanels }
-            })
-            return { ...prev, shots: updatedShots }
-          })
-          setProjects((prevProjects) =>
-            prevProjects.map((p) => {
-              if (p.id !== activeProject.id) return p
-              const updatedShots = p.shots?.map((s) => {
+    const projectId = activeProject.id
+    const key = `${projectId}:${shotId}:${panelId}`
+
+    pendingPanelUpdates.current[key] = {
+      ...(pendingPanelUpdates.current[key] || {}),
+      ...updates,
+    }
+
+    panelUpdateSeq.current[key] = (panelUpdateSeq.current[key] || 0) + 1
+    const currentSeq = panelUpdateSeq.current[key]
+
+    if (panelDebounceTimers.current[key]) {
+      clearTimeout(panelDebounceTimers.current[key])
+    }
+
+    panelDebounceTimers.current[key] = setTimeout(async () => {
+      delete panelDebounceTimers.current[key]
+      const payload = pendingPanelUpdates.current[key]
+      delete pendingPanelUpdates.current[key]
+      if (!payload || Object.keys(payload).length === 0) return
+
+      try {
+        const res = await fetch(`/api/projects/${projectId}/shots/${shotId}/panels/${panelId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        })
+        if (res.ok) {
+          const data = await res.json()
+          // Only apply server response if NO newer updates have been queued since this request was sent!
+          if (data.panel && panelUpdateSeq.current[key] === currentSeq) {
+            setActiveProject((prev) => {
+              if (!prev || prev.id !== projectId) return prev
+              const updatedShots = prev.shots?.map((s) => {
                 if (s.id !== shotId) return s
-                const updatedPanels = s.panels?.map((panel) => (panel.id === panelId ? { ...panel, ...data.panel } : panel))
+                const updatedPanels = s.panels?.map((p) => (p.id === panelId ? { ...p, ...data.panel } : p))
                 return { ...s, panels: updatedPanels }
               })
-              return { ...p, shots: updatedShots }
+              return { ...prev, shots: updatedShots }
             })
-          )
+            setProjects((prevProjects) =>
+              prevProjects.map((p) => {
+                if (p.id !== projectId) return p
+                const updatedShots = p.shots?.map((s) => {
+                  if (s.id !== shotId) return s
+                  const updatedPanels = s.panels?.map((panel) => (panel.id === panelId ? { ...panel, ...data.panel } : panel))
+                  return { ...s, panels: updatedPanels }
+                })
+                return { ...p, shots: updatedShots }
+              })
+            )
+          }
         }
+      } catch (err) {
+        console.error('Error updating panel:', err)
       }
-    } catch (err) {
-      console.error('Error updating panel:', err)
-    }
+    }, 500)
   }
 
   // Artist Opt In
@@ -634,6 +737,7 @@ export function App() {
         projects={projects}
         activeProject={activeProject}
         onSelectProject={(proj) => {
+          flushPendingUpdates()
           setActiveProject(proj)
           if (proj) {
             setActiveTab(isArtist ? 'tracker' : isVoiceActor ? 'voice' : 'tracker')
@@ -655,6 +759,7 @@ export function App() {
           <ProjectOverview
             projects={projects}
             onSelectProject={(proj) => {
+              flushPendingUpdates()
               setActiveProject(proj)
               setActiveTab(isArtist ? 'tracker' : isVoiceActor ? 'voice' : 'tracker')
             }}
@@ -663,7 +768,6 @@ export function App() {
             currentRole={isAvan ? 'producer' : isTom ? 'director' : 'crew'}
           />
         ) : (
-          /* Project Workspace */
           <div>
             {/* Project Subheader & Navigation (Compact height: 36px) */}
             <div
@@ -690,7 +794,10 @@ export function App() {
                 {/* Left: Back to Projects, Title & Director */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <button
-                    onClick={() => setActiveProject(null)}
+                    onClick={() => {
+                      flushPendingUpdates()
+                      setActiveProject(null)
+                    }}
                     style={{
                       display: 'flex',
                       alignItems: 'center',
