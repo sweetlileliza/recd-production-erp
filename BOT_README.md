@@ -1,4 +1,4 @@
-# 🤖 RECD Studios — Discord Auto-Tracker Bot
+# 🤖 RECD Studios — Discord Auto-Tracker Bot v0.1
 
 The **RECD Studios Discord Bot** connects your Discord server directly to the RECD Production ERP website. It gives directors, producers, and artists real-time production visibility, overdue bottleneck warnings, and two-way status updates directly from Discord chat.
 
