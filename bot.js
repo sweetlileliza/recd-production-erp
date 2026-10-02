@@ -14,7 +14,11 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds]
 });
 
+// Dynamic fallback for standalone executions
 const API_BASE = process.env.API_BASE || `http://127.0.0.1:${process.env.PORT || 5000}/api`;
+
+// In-memory services bridge when running together with server.js on Hostinger/PM2
+let internalServices = null;
 
 // Cache projects in-memory for instant autocomplete response (< 50ms)
 let projectsCache = [];
@@ -26,6 +30,12 @@ async function getCachedProjects(force = false) {
     return projectsCache;
   }
   try {
+    if (internalServices?.getAllProjects) {
+      projectsCache = await internalServices.getAllProjects();
+      lastProjectsFetch = now;
+      return projectsCache;
+    }
+
     const res = await fetch(`${API_BASE}/projects`);
     if (res.ok) {
       projectsCache = await res.json();
@@ -217,12 +227,17 @@ client.on('interactionCreate', async (interaction) => {
     await interaction.deferReply();
 
     try {
-      const response = await fetch(`${API_BASE}/discord/feed`);
-      if (!response.ok) {
-        return interaction.editReply(`❌ Could not connect to RECD API: ${response.statusText}`);
+      let feed;
+      if (internalServices?.getDiscordFeed) {
+        feed = await internalServices.getDiscordFeed();
+      } else {
+        const response = await fetch(`${API_BASE}/discord/feed`);
+        if (!response.ok) {
+          return interaction.editReply(`❌ Could not connect to RECD API: ${response.statusText} (${API_BASE}/discord/feed)`);
+        }
+        const json = await response.json();
+        feed = json.feed;
       }
-
-      const { feed } = await response.json();
 
       if (!feed || feed.length === 0) {
         return interaction.editReply('No active projects found in the studio database.');
@@ -262,7 +277,7 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.editReply({ embeds: [embed] });
     } catch (err) {
       console.error('Error fetching RECD feed:', err);
-      await interaction.editReply('❌ Failed to fetch studio status from the RECD backend.');
+      await interaction.editReply(`❌ Failed to fetch studio status from RECD: ${err.message}`);
     }
   }
 
@@ -271,12 +286,17 @@ client.on('interactionCreate', async (interaction) => {
     await interaction.deferReply();
 
     try {
-      const response = await fetch(`${API_BASE}/bottlenecks`);
-      if (!response.ok) {
-        return interaction.editReply(`❌ Could not connect to RECD API: ${response.statusText}`);
+      let data;
+      if (internalServices?.getBottlenecks) {
+        data = await internalServices.getBottlenecks();
+      } else {
+        const response = await fetch(`${API_BASE}/bottlenecks`);
+        if (!response.ok) {
+          return interaction.editReply(`❌ Could not connect to RECD API: ${response.statusText} (${API_BASE}/bottlenecks)`);
+        }
+        data = await response.json();
       }
 
-      const data = await response.json();
       const bottlenecks = data.bottlenecks || [];
 
       if (bottlenecks.length === 0) {
@@ -311,7 +331,7 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.editReply({ embeds: [embed] });
     } catch (err) {
       console.error('Error fetching bottlenecks:', err);
-      await interaction.editReply('❌ Failed to analyze studio bottlenecks.');
+      await interaction.editReply(`❌ Failed to analyze studio bottlenecks: ${err.message} (Target: ${API_BASE}/bottlenecks)`);
     }
   }
 
@@ -320,9 +340,22 @@ client.on('interactionCreate', async (interaction) => {
     await interaction.deferReply();
 
     try {
+      if (internalServices) {
+        const embed = new EmbedBuilder()
+          .setTitle('🛰️ RECD Studios System Health')
+          .setColor(0x10B981)
+          .addFields(
+            { name: 'Server Status', value: '🟢 online (In-Memory Bridge)', inline: true },
+            { name: 'Architecture', value: '⚡ Zero-latency direct database execution', inline: true },
+            { name: 'Hostinger Mode', value: 'Running inside unified server process', inline: false }
+          )
+          .setTimestamp();
+        return interaction.editReply({ embeds: [embed] });
+      }
+
       const response = await fetch(`${API_BASE}/health`);
       if (!response.ok) {
-        return interaction.editReply(`❌ RECD Backend returned error: ${response.statusText}`);
+        return interaction.editReply(`❌ RECD Backend returned error: ${response.statusText} (${API_BASE}/health)`);
       }
 
       const data = await response.json();
@@ -340,7 +373,7 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.editReply({ embeds: [embed] });
     } catch (err) {
       console.error('Health check failed:', err);
-      await interaction.editReply('🔴 RECD Backend appears to be offline or unreachable at ' + API_BASE);
+      await interaction.editReply(`🔴 RECD Backend appears to be offline or unreachable: ${err.message} (${API_BASE})`);
     }
   }
 
@@ -349,12 +382,16 @@ client.on('interactionCreate', async (interaction) => {
     await interaction.deferReply();
 
     try {
-      const response = await fetch(`${API_BASE}/team`);
-      if (!response.ok) {
-        return interaction.editReply(`❌ Could not fetch team roster: ${response.statusText}`);
+      let team;
+      if (internalServices?.getTeamMembers) {
+        team = await internalServices.getTeamMembers();
+      } else {
+        const response = await fetch(`${API_BASE}/team`);
+        if (!response.ok) {
+          return interaction.editReply(`❌ Could not fetch team roster: ${response.statusText} (${API_BASE}/team)`);
+        }
+        team = await response.json();
       }
-
-      const team = await response.json();
 
       if (!team || team.length === 0) {
         return interaction.editReply('No team members found in the database.');
@@ -387,7 +424,7 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.editReply({ embeds: [embed] });
     } catch (err) {
       console.error('Error fetching roster:', err);
-      await interaction.editReply('❌ Failed to fetch team roster from the RECD backend.');
+      await interaction.editReply(`❌ Failed to fetch team roster: ${err.message}`);
     }
   }
 
@@ -475,7 +512,7 @@ client.on('interactionCreate', async (interaction) => {
       return interaction.editReply({ embeds: [embed] });
     } catch (err) {
       console.error('Error in /panels:', err);
-      await interaction.editReply('❌ Failed to fetch panels.');
+      await interaction.editReply(`❌ Failed to fetch panels: ${err.message}`);
     }
   }
 
@@ -527,21 +564,31 @@ client.on('interactionCreate', async (interaction) => {
       if (newStatus) updates.status = newStatus;
       if (driveLink) updates.driveLink = driveLink;
 
-      const updateRes = await fetch(
-        `${API_BASE}/projects/${targetProj.id}/shots/${targetShot.id}/panels/${targetPanel.id}`,
-        {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(updates)
+      let result;
+      if (internalServices?.updatePanel) {
+        const res = await internalServices.updatePanel(targetProj.id, targetShot.id, targetPanel.id, updates);
+        if (!res) {
+          return interaction.editReply('❌ Panel or shot not found in the database.');
         }
-      );
+        result = res;
+      } else {
+        const updateRes = await fetch(
+          `${API_BASE}/projects/${targetProj.id}/shots/${targetShot.id}/panels/${targetPanel.id}`,
+          {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(updates)
+          }
+        );
 
-      if (!updateRes.ok) {
-        const errJson = await updateRes.json().catch(() => ({}));
-        return interaction.editReply(`❌ Failed to update panel: ${errJson.error || updateRes.statusText}`);
+        if (!updateRes.ok) {
+          const errJson = await updateRes.json().catch(() => ({}));
+          return interaction.editReply(`❌ Failed to update panel: ${errJson.error || updateRes.statusText}`);
+        }
+
+        result = await updateRes.json();
       }
 
-      const result = await updateRes.json();
       lastProjectsFetch = 0; // Invalidate cache so changes reflect immediately
 
       const embed = new EmbedBuilder()
@@ -569,7 +616,7 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.editReply({ embeds: [embed] });
     } catch (err) {
       console.error('Error in /updatepanel:', err);
-      await interaction.editReply('❌ An error occurred while updating the panel.');
+      await interaction.editReply(`❌ An error occurred while updating the panel: ${err.message}`);
     }
   }
 });
@@ -577,11 +624,16 @@ client.on('interactionCreate', async (interaction) => {
 // 4. Start the Bot
 let isBotStarted = false;
 
-export async function startBot() {
+export async function startBot(services = null) {
   if (isBotStarted) return client;
   if (!process.env.DISCORD_TOKEN) {
     console.log('ℹ️ [Discord Bot] DISCORD_TOKEN is not configured. Skipping bot startup.');
     return null;
+  }
+
+  if (services && typeof services.getBottlenecks === 'function') {
+    internalServices = services;
+    console.log('⚡ [Discord Bot] Direct in-memory database bridge connected! (Zero HTTP loopback required)');
   }
 
   isBotStarted = true;

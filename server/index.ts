@@ -439,5 +439,17 @@ if (process.env.NODE_ENV !== 'test') {
   })
 }
 
-export { app }
+export { 
+  app,
+  getAllProjects,
+  getProjectById,
+  createProject,
+  updateProject,
+  deleteProject,
+  updateShots,
+  updatePanel,
+  getTeamMembers,
+  getBottlenecks,
+  getDiscordFeed,
+}
 export default app

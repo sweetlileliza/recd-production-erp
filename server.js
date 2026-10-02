@@ -8,14 +8,15 @@
  * 3. The Discord Auto-Tracker Bot (when DISCORD_TOKEN is configured)
  */
 import './dist/server.js'
+import * as serverServices from './dist/server.js'
 
 // Automatically start Discord Bot alongside server if DISCORD_TOKEN is configured
 if (process.env.DISCORD_TOKEN) {
-  console.log('🤖 [Hostinger Startup] DISCORD_TOKEN detected. Starting Discord Bot alongside web server...')
+  console.log('🤖 [Hostinger Startup] DISCORD_TOKEN detected. Starting Discord Bot with direct in-memory database bridge...')
   import('./bot.js')
     .then(({ startBot }) => {
       if (typeof startBot === 'function') {
-        startBot()
+        startBot(serverServices)
       }
     })
     .catch((err) => {
